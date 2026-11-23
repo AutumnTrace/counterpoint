@@ -10,6 +10,7 @@ import { cpus } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gunzipSync } from 'node:zlib';
+import { encodeUpdate } from '../src/encoding.ts';
 import type { Op } from '../src/ops.ts';
 import { SimpleFugue } from '../src/reference/simple-fugue.ts';
 import { TextDoc } from '../src/text-doc.ts';
@@ -113,12 +114,32 @@ function benchTrace(trace: Trace): void {
     let kept: TextDoc | null = new TextDoc({ replicaId: 'author' });
     replay(kept, patches);
     const after = heapUsed();
-    const elements = kept.idsInOrder().length;
+    const elements = kept.elementCount; // also keeps `kept` alive past the measurement
     console.log(`memory            ${mb(after - before)} heap for ${fmt(elements)} elements (${fmt((after - before) / elements)} bytes/element)`);
     kept = null;
   } else {
     console.log('memory            (run with --expose-gc to measure)');
   }
+
+  // Wire format: every op as its own update message, like live typing.
+  let wire = 0;
+  for (const op of ops) wire += encodeUpdate([op], doc.variant).length;
+  console.log(`network           ${fmt(wire / ops.length, 1)} bytes/op on average (one op per message)`);
+
+  // Snapshots.
+  const snapshot = doc.save();
+  const save = time(() => doc.save(), warmup, runs);
+  const load = time(() => TextDoc.load(snapshot), warmup, runs);
+  const loaded = TextDoc.load(snapshot);
+  if (loaded.toString() !== trace.endContent) throw new Error(`${trace.name}: snapshot round trip changed the text`);
+  console.log(
+    `snapshot          ${fmt(snapshot.length / 1024, 1)} kB (text alone: ${fmt(trace.endContent.length / 1024, 1)} kB), save ${fmt(save.median, 1)} ms, load ${fmt(load.median, 1)} ms`,
+  );
+
+  // Delta sync from nothing: everything as one update, applied to an empty replica.
+  const update = doc.encodeChangesSince({});
+  const sync = time(() => new TextDoc({ replicaId: 'reader' }).applyUpdate(update), warmup, runs);
+  console.log(`full delta sync   ${fmt(update.length / 1024, 1)} kB update, applied in ${fmt(sync.median, 1)} ms`);
 }
 
 /** Shows why the index structure matters: the paper's literal algorithm on trace prefixes. */

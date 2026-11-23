@@ -34,12 +34,23 @@ describe('TextDoc basics', () => {
     expect(['Hello Ada Ben!', 'Hello Ben Ada!']).toContain(ada.toString());
   });
 
-  it('rejects ops whose dependencies are missing', () => {
+  it('buffers ops whose dependencies are missing', () => {
     const ada = new TextDoc({ replicaId: 'ada' });
     const ben = new TextDoc({ replicaId: 'ben' });
+    const first = ada.insert(0, 'abc');
+    const second = ada.insert(3, 'd');
+    expect(ben.apply(second)).toBe('buffered');
+    expect(ben.pending()).toEqual([second]);
+    expect(ben.toString()).toBe('');
+    expect(ben.apply(first)).toBe('applied');
+    expect(ben.pendingCount).toBe(0);
+    expect(ben.toString()).toBe('abcd');
+  });
+
+  it('cannot resolve an anchor to a character it has never seen', () => {
+    const ada = new TextDoc({ replicaId: 'ada' });
     ada.insert(0, 'abc');
-    const op = ada.insert(3, 'd');
-    expect(() => ben.apply(op)).toThrow(MissingDependencyError);
+    expect(() => new TextDoc().resolve(ada.anchor(2))).toThrow(MissingDependencyError);
   });
 
   it('rejects out-of-range edits', () => {
