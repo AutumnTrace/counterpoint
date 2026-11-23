@@ -2,7 +2,7 @@ import './style.css';
 import { TextDoc, sameVersion } from '@autumntrace/counterpoint';
 import { LINKS, SimNetwork } from './network.ts';
 import { Peer, type PeerSpec } from './peer.ts';
-import { authoredChars, authoredHtml, runScenario } from './scenario.ts';
+import { authoredChars, authoredHtml, keptWhole, runScenario } from './scenario.ts';
 import { LogView } from './views/log-view.ts';
 import { NetworkView } from './views/network-view.ts';
 import { renderTree } from './views/tree-view.ts';
@@ -103,12 +103,29 @@ scenarioButton.addEventListener('click', async () => {
   const result = $('#scenario-result');
   result.innerHTML = '<p class="hint">Typing…</p>';
   try {
-    const doc = await runScenario({ peers, net, log, reset, converged });
-    result.innerHTML = `
-      <div class="result result--good" data-testid="result-fugue">
-        <h3>Fugue (this library) <small>${converged() ? 'all three replicas agree' : 'still syncing'}</small></h3>
-        <pre>${authoredHtml(authoredChars(doc))}</pre>
-      </div>`;
+    const { fugue, naive } = await runScenario({ peers, net, log, reset, converged });
+    const card = (id: string, title: string, text: string, html: string, note: string) => {
+      const whole = keptWhole(text);
+      return `
+        <div class="result ${whole ? 'result--good' : 'result--bad'}" data-testid="result-${id}">
+          <h3>${title} <small>${whole ? 'both items whole' : 'interleaved'}</small></h3>
+          <pre>${html}</pre>
+          <p class="hint">${note}</p>
+        </div>`;
+    };
+    result.innerHTML = `<div class="results">${card(
+      'fugue',
+      'Fugue (counterpoint)',
+      fugue.toString(),
+      authoredHtml(authoredChars(fugue)),
+      converged() ? 'The live replicas above, after healing. All three agree.' : 'Still syncing.',
+    )}${card(
+      'naive',
+      'Naive dense ids (baseline)',
+      naive.toString(),
+      authoredHtml(authoredChars(naive)),
+      'The same keystrokes on a Logoot-style list CRDT kept in the repo for comparison. It converges too, just not to anything readable.',
+    )}</div>`;
   } finally {
     buttons.forEach((b) => (b.disabled = false));
   }

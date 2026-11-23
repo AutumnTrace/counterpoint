@@ -61,7 +61,8 @@
         </div>
         <p>
           Ada goes offline. She and Ben both add an item to the end of the same list, one keystroke at a time, at the same moment.
-          Then the network heals. A CRDT that interleaves would merge the two items letter by letter; Fugue keeps each one whole.
+          Then the network heals. A CRDT that interleaves merges the two items letter by letter; Fugue keeps each one whole.
+          The same keystrokes also go to a deliberately naive CRDT, side by side.
         </p>
         <button type="button" id="scenario" class="primary" data-testid="run-scenario">Run it</button>
         <div id="scenario-result" class="scenario-result" data-testid="scenario-result" aria-live="polite"></div>

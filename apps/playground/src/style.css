@@ -718,3 +718,7 @@ button.quiet {
   color: var(--muted);
   font-size: 0.85rem;
 }
+
+.result .hint {
+  margin: 8px 0 0;
+}

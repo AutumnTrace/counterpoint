@@ -58,7 +58,11 @@ test('the interleaving scenario keeps both list items whole', async ({ page }) =
   await expect(result).toBeVisible({ timeout: 30_000 });
   const text = await expectConverged(page);
   expect(['Shopping:\n- milk\n- eggs\n- bread\n', 'Shopping:\n- milk\n- bread\n- eggs\n']).toContain(text);
-  await expect(result).toContainText('all three replicas agree');
+  await expect(result).toContainText('both items whole');
+  // The baseline, fed the same keystrokes, interleaves them.
+  const naive = page.getByTestId('result-naive');
+  await expect(naive).toContainText('interleaved');
+  await expect(naive.locator('pre')).toContainText('ebgrgesa');
 });
 
 test('a remote insert before the caret moves the caret with the text', async ({ page }) => {
