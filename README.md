@@ -11,7 +11,9 @@ Work in progress.
   paper's Algorithm 1 transcribed directly and serves as the test oracle.
 - `apps/playground`: three peers on a simulated network you can partition,
   with latency, reordering and duplication controls, a message log and a view
-  of each replica's Fugue tree.
+  of each replica's Fugue tree, and a scenario that runs the same concurrent
+  keystrokes through Fugue and through a deliberately naive baseline
+  (`@autumntrace/counterpoint/baseline`, dense Logoot-style ids) side by side.
 
 ```sh
 npm install

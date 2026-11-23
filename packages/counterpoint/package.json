@@ -22,6 +22,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./baseline": {
+      "types": "./dist/baseline/naive.d.ts",
+      "default": "./dist/baseline/naive.js"
     }
   },
   "files": [

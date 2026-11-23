@@ -3,8 +3,13 @@
  * line at the end of the same list one keystroke at a time, and the network
  * heals. Afterwards the merged text is shown with each character coloured
  * by the replica that typed it.
+ *
+ * The same keystrokes are replayed on three replicas of the naive baseline
+ * (dense position ids, see packages/counterpoint/src/baseline), which are
+ * merged the same way, to show what Fugue is avoiding.
  */
 import { TextDoc } from '@autumntrace/counterpoint';
+import { NaiveDoc, type NaiveOp } from '@autumntrace/counterpoint/baseline';
 import type { SimNetwork } from './network.ts';
 import type { Peer } from './peer.ts';
 import type { LogView } from './views/log-view.ts';
@@ -43,14 +48,27 @@ export function keystrokes(): { who: 'ada' | 'ben'; index: number; char: string 
   return out;
 }
 
-export async function runScenario(ctx: ScenarioContext, keystrokeMs = 110): Promise<TextDoc> {
+export interface ScenarioResult {
+  readonly fugue: TextDoc;
+  readonly naive: NaiveDoc;
+}
+
+export async function runScenario(ctx: ScenarioContext, keystrokeMs = 110): Promise<ScenarioResult> {
   const [ada, ben] = ctx.peers as [Peer, Peer, Peer];
   ctx.reset(BASE);
+  // The baseline gets the same history: Cy wrote the list, everyone has it.
+  const [nAda, nBen, nCy] = ['ada', 'ben', 'cy'].map((r) => new NaiveDoc(r)) as [NaiveDoc, NaiveDoc, NaiveDoc];
+  for (const op of nCy.insert(0, BASE)) {
+    nAda.apply(op);
+    nBen.apply(op);
+  }
+  const naiveOps: NaiveOp[] = [];
   ctx.log.note('Scenario: Ada is cut off. She and Ben each add an item to the end of the list.');
   ctx.net.setLink(0, false); // Ada–Ben
   ctx.net.setLink(2, false); // Ada–Cy
   for (const k of keystrokes()) {
     (k.who === 'ada' ? ada : ben).typeAt(k.index, k.char);
+    naiveOps.push(...(k.who === 'ada' ? nAda : nBen).insert(k.index, k.char));
     await sleep(keystrokeMs / 2);
   }
   await sleep(Math.max(400, ctx.net.latency + ctx.net.jitter));
@@ -58,7 +76,13 @@ export async function runScenario(ctx: ScenarioContext, keystrokeMs = 110): Prom
   ctx.net.setLink(0, true);
   ctx.net.setLink(2, true);
   await until(() => ctx.converged(), 20_000 + 6 * (ctx.net.latency + ctx.net.jitter));
-  return ada.doc;
+  for (const d of [nAda, nBen, nCy]) for (const op of naiveOps) d.apply(op);
+  return { fugue: ada.doc, naive: nAda };
+}
+
+/** Whether both new lines appear whole in `text`. */
+export function keptWhole(text: string): boolean {
+  return text.includes(ADA_LINE) && text.includes(BEN_LINE);
 }
 
 /** The document's text as HTML, each character coloured by its author. */
@@ -78,7 +102,8 @@ export function authoredHtml(chars: readonly { char: string; author: string }[])
   return html;
 }
 
-export function authoredChars(doc: TextDoc): { char: string; author: string }[] {
+export function authoredChars(doc: TextDoc | NaiveDoc): { char: string; author: string }[] {
   const text = doc.toString();
-  return Array.from({ length: text.length }, (_, i) => ({ char: text[i]!, author: doc.idAt(i).replica }));
+  const author = doc instanceof TextDoc ? (i: number) => doc.idAt(i).replica : (i: number) => doc.authorAt(i);
+  return Array.from({ length: text.length }, (_, i) => ({ char: text[i]!, author: author(i) }));
 }
