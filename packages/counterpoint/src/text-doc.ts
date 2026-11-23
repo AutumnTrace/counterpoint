@@ -1,12 +1,15 @@
 /**
  * A collaborative plain-text document: the Fugue / FugueMax tree for
- * deciding where characters go, plus an order-statistic tree (order-tree.ts)
- * for turning that into indexes quickly.
+ * deciding where characters go, an order-statistic tree (order-tree.ts) for
+ * turning that into indexes quickly, and a small causal-delivery layer so
+ * ops can arrive late, early, twice, or in bulk after a partition.
  */
 import { Elem, firstDescendant, lastDescendant } from './element.ts';
+import { DecodeError, decodeUpdate, encodeUpdate, encodeVersion } from './encoding.ts';
 import { compareIds, formatId, randomReplicaId, type Id, type IdRange, type ReplicaId } from './id.ts';
-import type { DeleteOp, InsertOp, Op, Side, Variant } from './ops.ts';
+import { opSpan, type DeleteOp, type InsertOp, type Op, type Side, type Variant } from './ops.ts';
 import { OrderTree } from './order-tree.ts';
+import { versionOf, type VersionVector } from './version.ts';
 
 export interface TextDocOptions {
   /** Must be unique among live sessions. Defaults to a random id. */
@@ -21,7 +24,7 @@ export type TextChange =
   | { readonly kind: 'delete'; readonly index: number; readonly length: number };
 
 export interface ChangeEvent {
-  /** 'local' for edits made through insert()/delete(), 'remote' for apply(). */
+  /** 'local' for edits made through insert()/delete(), 'remote' for applied ops. */
   readonly origin: 'local' | 'remote';
   readonly op: Op;
   /** Apply these in order to a copy of the old text to get the new text. */
@@ -40,6 +43,15 @@ export interface Anchor {
   readonly stick: 'left' | 'right';
 }
 
+/** What `apply` did with an op. */
+export type ApplyStatus = 'applied' | 'duplicate' | 'buffered';
+
+export interface ApplySummary {
+  applied: number;
+  duplicate: number;
+  buffered: number;
+}
+
 export class MissingDependencyError extends Error {
   readonly missing: Id;
   constructor(missing: Id, context: string) {
@@ -49,20 +61,61 @@ export class MissingDependencyError extends Error {
   }
 }
 
+/**
+ * A replica's log entry at one counter: the inserted element, or the
+ * targets of the delete op that used it (the op's id is implied by the slot,
+ * so only the targets are kept).
+ */
+type Slot = Elem | readonly IdRange[] | undefined;
+
+interface Pending {
+  readonly op: Op;
+  readonly key: string;
+  /** Released once the waited-on replica's version exceeds this counter. */
+  readonly need: number;
+}
+
 export class TextDoc {
   readonly replicaId: ReplicaId;
   readonly variant: Variant;
 
   private readonly root = new Elem('', -1, '', null, 'right', null);
   private readonly order = new OrderTree();
-  /** byReplica.get(r)[c] is the element with id (r, c), if c was an insert. */
-  private readonly byReplica = new Map<ReplicaId, (Elem | undefined)[]>();
-  private counter = 0;
+  /**
+   * The log, indexed by replica then counter: an Elem for every inserted
+   * character, the delete targets for every counter a delete used.
+   */
+  private readonly slots = new Map<ReplicaId, Slot[]>();
+  /** How many counters of each replica have been applied (a version vector). */
+  private readonly clock = new Map<ReplicaId, number>();
+  /** Buffered ops, grouped by the replica whose progress they wait for. */
+  private readonly waiting = new Map<ReplicaId, MinHeap<Pending>>();
+  private readonly bufferedKeys = new Set<string>();
   private readonly listeners = new Set<(event: ChangeEvent) => void>();
 
   constructor(options: TextDocOptions = {}) {
     this.replicaId = options.replicaId ?? randomReplicaId();
     this.variant = options.variant ?? 'fugue-max';
+  }
+
+  /**
+   * Loads a document saved with `save()`. Pass the same `replicaId` only to
+   * resume that replica's own session (it continues its counter); by default
+   * the loaded copy gets a fresh id.
+   */
+  static load(bytes: Uint8Array, options: TextDocOptions = {}): TextDoc {
+    const { variant, ops } = decodeUpdate(bytes, 'snapshot');
+    if (options.variant !== undefined && options.variant !== variant) {
+      throw new Error(`snapshot uses ${variant}, not ${options.variant}`);
+    }
+    const doc = new TextDoc({ ...options, variant });
+    try {
+      doc.applyAll(ops);
+    } catch (e) {
+      throw new DecodeError(`snapshot contains an invalid op: ${(e as Error).message}`);
+    }
+    if (doc.pendingCount > 0) throw new DecodeError('snapshot refers to elements it does not contain');
+    return doc;
   }
 
   // ------------------------------------------------------------- reading
@@ -93,6 +146,11 @@ export class TextDoc {
     return ids;
   }
 
+  /** Total number of elements ever inserted, tombstones included. */
+  get elementCount(): number {
+    return this.order.size;
+  }
+
   // --------------------------------------------------------- local edits
 
   /** Inserts `text` at visible index `index`. Returns the op to broadcast. */
@@ -117,7 +175,7 @@ export class TextDoc {
     }
     const op: InsertOp = {
       kind: 'insert',
-      id: { replica: this.replicaId, counter: this.counter },
+      id: { replica: this.replicaId, counter: this.versionOf(this.replicaId) },
       text,
       parent: parent === this.root ? null : toId(parent),
       side,
@@ -143,7 +201,11 @@ export class TextDoc {
         targets.push(last);
       }
     }
-    const op: DeleteOp = { kind: 'delete', id: { replica: this.replicaId, counter: this.counter }, targets };
+    const op: DeleteOp = {
+      kind: 'delete',
+      id: { replica: this.replicaId, counter: this.versionOf(this.replicaId) },
+      targets,
+    };
     this.integrateDelete(op, 'local');
     return op;
   }
@@ -151,12 +213,108 @@ export class TextDoc {
   // ------------------------------------------------------- remote edits
 
   /**
-   * Integrates an op from another replica. Its dependencies (parent, right
-   * origin, delete targets) must already be here.
+   * Integrates an op from anywhere. Ops can arrive in any order and any
+   * number of times: one that is already here is ignored, one whose
+   * dependencies are missing waits in a buffer until they arrive.
    */
-  apply(op: Op): void {
-    if (op.kind === 'insert') this.integrateInsert(op, 'remote');
-    else this.integrateDelete(op, 'remote');
+  apply(op: Op): ApplyStatus {
+    const status = this.receive(op);
+    if (status === 'applied') this.drain(op.id.replica);
+    return status;
+  }
+
+  applyAll(ops: Iterable<Op>): ApplySummary {
+    const summary: ApplySummary = { applied: 0, duplicate: 0, buffered: 0 };
+    for (const op of ops) summary[this.apply(op)]++;
+    return summary;
+  }
+
+  /** Decodes and applies an update produced by `encodeUpdate` / `encodeChangesSince`. */
+  applyUpdate(bytes: Uint8Array): ApplySummary {
+    const { variant, ops } = decodeUpdate(bytes);
+    if (variant !== this.variant) throw new Error(`update uses ${variant}, this document uses ${this.variant}`);
+    return this.applyAll(ops);
+  }
+
+  /** Ops that are waiting for dependencies, oldest first within each replica. */
+  pending(): Op[] {
+    const out: Op[] = [];
+    for (const heap of this.waiting.values()) for (const p of heap.items()) out.push(p.op);
+    return out;
+  }
+
+  get pendingCount(): number {
+    return this.bufferedKeys.size;
+  }
+
+  // ---------------------------------------------------------------- sync
+
+  /** For each replica, how many of its counters have been applied here. */
+  version(): VersionVector {
+    const vv: Record<ReplicaId, number> = Object.create(null);
+    for (const [r, n] of this.clock) vv[r] = n;
+    return vv;
+  }
+
+  /**
+   * Everything applied here that a peer at version `since` lacks, as ops.
+   * Inserts are regenerated from the elements themselves (merged into runs
+   * where possible); deletes come straight from the log.
+   */
+  changesSince(since: VersionVector = {}): Op[] {
+    const ops: Op[] = [];
+    // Sorted, so the output (and therefore save()) is canonical.
+    for (const replica of [...this.clock.keys()].sort()) {
+      const have = this.clock.get(replica)!;
+      const slots = this.slots.get(replica)!;
+      for (let c = versionOf(since, replica); c < have; ) {
+        const slot = slots[c];
+        if (slot === undefined) throw new Error(`log hole at ${replica}:${c}`);
+        if (!(slot instanceof Elem)) {
+          ops.push({ kind: 'delete', id: { replica, counter: c }, targets: slot });
+          c++;
+          continue;
+        }
+        let text = slot.char;
+        let last = slot;
+        let n = c + 1;
+        for (; n < have; n++) {
+          const e = slots[n];
+          if (!(e instanceof Elem) || e.parent !== last || e.side !== 'right' || e.rightOrigin !== last.rightOrigin) break;
+          text += e.char;
+          last = e;
+        }
+        ops.push({
+          kind: 'insert',
+          id: { replica, counter: c },
+          text,
+          parent: slot.parent === this.root ? null : toId(slot.parent!),
+          side: slot.side,
+          rightOrigin: slot.rightOrigin === null ? null : toId(slot.rightOrigin),
+        });
+        c = n;
+      }
+    }
+    return ops;
+  }
+
+  /** `changesSince` as a binary update. */
+  encodeChangesSince(since: VersionVector = {}): Uint8Array {
+    return encodeUpdate(this.changesSince(since), this.variant);
+  }
+
+  /** This document's version vector as a binary message (the "what I have" half of a sync). */
+  encodeVersion(): Uint8Array {
+    return encodeVersion(this.version(), this.variant);
+  }
+
+  /**
+   * The whole document: every op it has applied, in the update encoding
+   * (inserts regenerated as runs, tombstones and the delete log included).
+   * Buffered ops are not part of it.
+   */
+  save(): Uint8Array {
+    return encodeUpdate(this.changesSince({}), this.variant, 'snapshot');
   }
 
   // ------------------------------------------------------------- anchors
@@ -186,10 +344,34 @@ export class TextDoc {
     return () => this.listeners.delete(listener);
   }
 
+  // ------------------------------------------------- inspection (for UIs)
+
+  /**
+   * The Fugue tree as plain data, for visualising small documents.
+   * Children are listed in traversal order.
+   */
+  inspectTree(): TreeNode {
+    const build = (e: Elem): TreeNode => ({
+      id: e === this.root ? null : toId(e),
+      char: e.char,
+      deleted: e === this.root ? false : e.deleted,
+      side: e.side,
+      rightOrigin: e.rightOrigin === null ? null : toId(e.rightOrigin),
+      left: (e.left ?? []).map(build),
+      right: (e.right ?? []).map(build),
+    });
+    return build(this.root);
+  }
+
   // ----------------------------------------------------------- internals
 
+  private versionOf(replica: ReplicaId): number {
+    return this.clock.get(replica) ?? 0;
+  }
+
   private lookup(id: Id): Elem | undefined {
-    return this.byReplica.get(id.replica)?.[id.counter];
+    const slot = this.slots.get(id.replica)?.[id.counter];
+    return slot instanceof Elem ? slot : undefined;
   }
 
   private require(id: Id | null, context: string): Elem {
@@ -199,17 +381,88 @@ export class TextDoc {
     return e;
   }
 
-  private slots(replica: ReplicaId): (Elem | undefined)[] {
-    let slots = this.byReplica.get(replica);
+  private slotsOf(replica: ReplicaId): Slot[] {
+    let slots = this.slots.get(replica);
     if (slots === undefined) {
       slots = [];
-      this.byReplica.set(replica, slots);
+      this.slots.set(replica, slots);
     }
     return slots;
   }
 
-  private bump(id: Id, span: number): void {
-    if (id.replica === this.replicaId) this.counter = Math.max(this.counter, id.counter + span);
+  /** Applies `op` now if it can be, otherwise buffers it. Does not drain the buffer. */
+  private receive(op: Op): ApplyStatus {
+    const have = this.versionOf(op.id.replica);
+    if (op.id.counter + opSpan(op) <= have) return 'duplicate';
+    if (op.id.counter < have) {
+      // Part of this insert run is already here (a resent run can be longer
+      // than the one first received). Keep the new tail: its first char's
+      // parent is the previous char of the same run.
+      const ins = op as InsertOp;
+      const skip = have - ins.id.counter;
+      op = {
+        kind: 'insert',
+        id: { replica: ins.id.replica, counter: have },
+        text: ins.text.slice(skip),
+        parent: { replica: ins.id.replica, counter: have - 1 },
+        side: 'right',
+        rightOrigin: ins.rightOrigin,
+      };
+    }
+    const missing = this.firstMissing(op);
+    if (missing !== null) {
+      const key = `${op.kind}:${op.id.replica}:${op.id.counter}:${opSpan(op)}`;
+      if (!this.bufferedKeys.has(key)) {
+        this.bufferedKeys.add(key);
+        let heap = this.waiting.get(missing.replica);
+        if (heap === undefined) {
+          heap = new MinHeap<Pending>((a, b) => a.need - b.need);
+          this.waiting.set(missing.replica, heap);
+        }
+        heap.push({ op, key, need: missing.counter });
+      }
+      return 'buffered';
+    }
+    if (op.kind === 'insert') this.integrateInsert(op, 'remote');
+    else this.integrateDelete(op, 'remote');
+    return 'applied';
+  }
+
+  /** The first dependency of `op` that has not been applied yet, if any. */
+  private firstMissing(op: Op): Id | null {
+    const { replica, counter } = op.id;
+    if (counter > this.versionOf(replica)) return { replica, counter: counter - 1 };
+    if (op.kind === 'insert') {
+      if (op.parent !== null && this.versionOf(op.parent.replica) <= op.parent.counter) return op.parent;
+      if (op.rightOrigin !== null && this.versionOf(op.rightOrigin.replica) <= op.rightOrigin.counter) return op.rightOrigin;
+      return null;
+    }
+    for (const t of op.targets) {
+      const lastCounter = t.counter + t.length - 1;
+      if (this.versionOf(t.replica) <= lastCounter) return { replica: t.replica, counter: lastCounter };
+    }
+    return null;
+  }
+
+  /** Releases buffered ops whose dependency has arrived, transitively. */
+  private drain(start: ReplicaId): void {
+    const work = [start];
+    while (work.length > 0) {
+      const replica = work.pop()!;
+      const heap = this.waiting.get(replica);
+      if (heap === undefined) continue;
+      const have = this.versionOf(replica);
+      while (heap.size > 0 && heap.peek()!.need < have) {
+        const p = heap.pop()!;
+        this.bufferedKeys.delete(p.key);
+        if (this.receive(p.op) === 'applied') work.push(p.op.id.replica);
+      }
+      if (heap.size === 0) this.waiting.delete(replica);
+    }
+  }
+
+  private advance(id: Id, span: number): void {
+    this.clock.set(id.replica, id.counter + span);
   }
 
   private integrateInsert(op: InsertOp, origin: 'local' | 'remote'): void {
@@ -220,10 +473,7 @@ export class TextDoc {
       throw new Error(`${what}: a left child's right origin must be its (non-root) parent`);
     }
     if (op.text.length === 0) throw new Error(`${what}: empty text`);
-    const slots = this.slots(op.id.replica);
-    for (let k = 0; k < op.text.length; k++) {
-      if (slots[op.id.counter + k] !== undefined) throw new Error(`${what}: element ${op.id.counter + k} already exists`);
-    }
+    const slots = this.slotsOf(op.id.replica);
 
     // The run: first char hangs off `parent`, the rest form a right-child chain.
     const run: Elem[] = new Array(op.text.length);
@@ -258,7 +508,7 @@ export class TextDoc {
       this.order.insertBefore(firstDescendant(siblings[at + 1]!), run);
     }
 
-    this.bump(op.id, op.text.length);
+    this.advance(op.id, op.text.length);
     if (this.listeners.size > 0) {
       this.emit({ origin, op, changes: [{ kind: 'insert', index: this.order.visibleIndexOf(first), text: op.text }] });
     }
@@ -276,11 +526,11 @@ export class TextDoc {
         const sib = siblings[i]!;
         const theirs = sib.rightOrigin === node.rightOrigin ? mine : pos(sib.rightOrigin);
         if (mine > theirs) break;
-        if (mine === theirs && compareElems(node, sib) < 0) break;
+        if (mine === theirs && compareIds(node, sib) < 0) break;
       }
       return i;
     }
-    while (i < siblings.length && compareElems(siblings[i]!, node) < 0) i++;
+    while (i < siblings.length && compareIds(siblings[i]!, node) < 0) i++;
     return i;
   }
 
@@ -303,8 +553,8 @@ export class TextDoc {
       if (last !== undefined && last.index === index) last.length++;
       else changes.push({ kind: 'delete', index, length: 1 });
     }
-    this.slots(op.id.replica)[op.id.counter] = undefined;
-    this.bump(op.id, 1);
+    this.slotsOf(op.id.replica)[op.id.counter] = op.targets;
+    this.advance(op.id, 1);
     if (track) this.emit({ origin, op, changes });
   }
 
@@ -313,10 +563,71 @@ export class TextDoc {
   }
 }
 
+/** Plain-data view of one tree node, from `inspectTree()`. */
+export interface TreeNode {
+  /** null for the root. */
+  readonly id: Id | null;
+  readonly char: string;
+  readonly deleted: boolean;
+  readonly side: Side;
+  readonly rightOrigin: Id | null;
+  readonly left: readonly TreeNode[];
+  readonly right: readonly TreeNode[];
+}
+
 function toId(e: Elem): Id {
   return { replica: e.replica, counter: e.counter };
 }
 
-function compareElems(a: Elem, b: Elem): number {
-  return compareIds(a, b);
+/** A small binary min-heap. */
+class MinHeap<T> {
+  private readonly data: T[] = [];
+  private readonly less: (a: T, b: T) => number;
+
+  constructor(compare: (a: T, b: T) => number) {
+    this.less = compare;
+  }
+
+  get size(): number {
+    return this.data.length;
+  }
+
+  peek(): T | undefined {
+    return this.data[0];
+  }
+
+  items(): readonly T[] {
+    return this.data;
+  }
+
+  push(item: T): void {
+    const d = this.data;
+    d.push(item);
+    for (let i = d.length - 1; i > 0; ) {
+      const p = (i - 1) >> 1;
+      if (this.less(d[i]!, d[p]!) >= 0) break;
+      [d[i], d[p]] = [d[p]!, d[i]!];
+      i = p;
+    }
+  }
+
+  pop(): T | undefined {
+    const d = this.data;
+    const top = d[0];
+    const last = d.pop();
+    if (d.length > 0 && last !== undefined) {
+      d[0] = last;
+      for (let i = 0; ; ) {
+        const l = 2 * i + 1;
+        const r = l + 1;
+        let m = i;
+        if (l < d.length && this.less(d[l]!, d[m]!) < 0) m = l;
+        if (r < d.length && this.less(d[r]!, d[m]!) < 0) m = r;
+        if (m === i) break;
+        [d[i], d[m]] = [d[m]!, d[i]!];
+        i = m;
+      }
+    }
+    return top;
+  }
 }
