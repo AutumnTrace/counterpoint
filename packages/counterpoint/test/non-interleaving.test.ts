@@ -36,7 +36,7 @@ const sessionArb = (alphabetIndex: number) =>
           { weight: 5, arbitrary: fc.constantFrom(...ALPHABETS[alphabetIndex]!) },
           { weight: 1, arbitrary: fc.constant('BS') },
         ),
-        { minLength: 1, maxLength: 8 },
+        { minLength: 1, maxLength: 8, size: 'max' },
       ),
     })
     .map((s): SessionSpec => (s.dir === 'backward' ? { ...s, keys: s.keys.filter((k) => k !== 'BS') } : s));
@@ -152,7 +152,7 @@ describe.each(IMPLS)('$name', (impl) => {
     it('never interleaves concurrent typing sessions at the same position', () => {
       fc.assert(
         fc.property(
-          fc.array(actionArb(2), { maxLength: 25 }),
+          fc.array(actionArb(2), { maxLength: 25, size: 'max' }),
           fc.nat(),
           fc.integer({ min: 2, max: 3 }).chain((k) => fc.tuple(...Array.from({ length: k }, (_, g) => sessionArb(g)))),
           (base, at, sessions) => {
