@@ -27,7 +27,7 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.65.1",
-    "@types/node": "^24.19.2",
+    "@types/node": "^26.6.6",
     "fast-check": "^4.11.0",
     "gifenc": "^1.0.3",
     "pngjs": "^7.0.0",
