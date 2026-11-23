@@ -10,7 +10,7 @@ export type Action =
 const letters = fc.constantFrom(...'abcxyz');
 
 /** Random local edits and deliveries for `replicas` replicas. */
-export function actionArb(replicas: number): fc.Arbitrary<Action> {
+export function actionArb(replicas: number, maxText = 3): fc.Arbitrary<Action> {
   const r = fc.nat(replicas - 1);
   return fc.oneof(
     {
@@ -19,7 +19,7 @@ export function actionArb(replicas: number): fc.Arbitrary<Action> {
         t: fc.constant('ins' as const),
         r,
         at: fc.nat(),
-        text: fc.string({ unit: letters, minLength: 1, maxLength: 3 }),
+        text: fc.string({ unit: letters, minLength: 1, maxLength: maxText, size: 'max' }),
       }),
     },
     {
@@ -31,10 +31,10 @@ export function actionArb(replicas: number): fc.Arbitrary<Action> {
 }
 
 /** A replica count together with a history for that many replicas. */
-export function historyArb(minReplicas = 2, maxReplicas = 4, maxActions = 60) {
+export function historyArb(minReplicas = 2, maxReplicas = 4, maxActions = 60, maxText = 3) {
   return fc
     .integer({ min: minReplicas, max: maxReplicas })
-    .chain((n) => fc.tuple(fc.constant(n), fc.array(actionArb(n), { maxLength: maxActions })));
+    .chain((n) => fc.tuple(fc.constant(n), fc.array(actionArb(n, maxText), { maxLength: maxActions, size: 'max' })));
 }
 
 export function runActions<D extends DocLike>(cluster: Cluster<D>, actions: readonly Action[]): void {

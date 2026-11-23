@@ -10,7 +10,13 @@
     "url": "git+https://github.com/AutumnTrace/counterpoint.git",
     "directory": "packages/counterpoint"
   },
-  "keywords": ["crdt", "fugue", "collaborative-editing", "local-first", "text"],
+  "keywords": [
+    "crdt",
+    "fugue",
+    "collaborative-editing",
+    "local-first",
+    "text"
+  ],
   "sideEffects": false,
   "exports": {
     ".": {
@@ -18,9 +24,14 @@
       "default": "./dist/index.js"
     }
   },
-  "files": ["dist", "src"],
+  "files": [
+    "dist",
+    "src"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "bench:fetch": "node bench/fetch-traces.mjs",
+    "bench": "node bench/fetch-traces.mjs && node --expose-gc bench/trace.ts"
   }
 }
