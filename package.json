@@ -1,6 +1,12 @@
 {
   "name": "counterpoint-monorepo",
   "private": true,
+  "description": "counterpoint: a Fugue text CRDT and a partition playground",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AutumnTrace/counterpoint.git"
+  },
   "type": "module",
   "workspaces": [
     "packages/*",
@@ -16,12 +22,15 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "e2e": "playwright test",
-    "bench": "npm run bench -w @autumntrace/counterpoint"
+    "bench": "npm run bench -w @autumntrace/counterpoint",
+    "media": "npm run build && node scripts/capture-media.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.65.1",
     "@types/node": "^24.19.2",
     "fast-check": "^4.11.0",
+    "gifenc": "^1.0.3",
+    "pngjs": "^7.0.0",
     "typescript": "^7.0.2",
     "vitest": "^5.1.1"
   }

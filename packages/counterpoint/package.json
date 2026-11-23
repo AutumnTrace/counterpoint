@@ -37,5 +37,9 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "bench:fetch": "node bench/fetch-traces.mjs",
     "bench": "node bench/fetch-traces.mjs && node --expose-gc bench/trace.ts"
+  },
+  "homepage": "https://autumntrace.github.io/counterpoint/",
+  "engines": {
+    "node": ">=18"
   }
 }
