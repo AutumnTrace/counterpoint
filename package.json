@@ -10,12 +10,16 @@
     "node": ">=22.18"
   },
   "scripts": {
+    "dev": "npm run dev -w playground",
     "build": "npm run build --workspaces --if-present",
-    "typecheck": "npm run typecheck --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present && tsc -p e2e/tsconfig.json",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "e2e": "playwright test",
+    "bench": "npm run bench -w @autumntrace/counterpoint"
   },
   "devDependencies": {
+    "@playwright/test": "^1.65.1",
     "@types/node": "^24.19.2",
     "fast-check": "^4.11.0",
     "typescript": "^7.0.2",
