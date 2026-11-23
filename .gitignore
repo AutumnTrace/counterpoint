@@ -1,0 +1,12 @@
+node_modules/
+dist/
+coverage/
+*.log
+.DS_Store
+.vite/
+# downloaded editing traces (fetched by scripts/fetch-traces.mjs)
+packages/counterpoint/bench/data/
+# playwright output
+test-results/
+playwright-report/
+.media-frames/

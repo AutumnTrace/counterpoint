@@ -1,0 +1,26 @@
+{
+  "name": "@autumntrace/counterpoint",
+  "version": "0.1.0",
+  "description": "A Fugue / FugueMax text CRDT: collaborative text that does not interleave concurrent edits.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Mina Rotari",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AutumnTrace/counterpoint.git",
+    "directory": "packages/counterpoint"
+  },
+  "keywords": ["crdt", "fugue", "collaborative-editing", "local-first", "text"],
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "src"],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  }
+}
