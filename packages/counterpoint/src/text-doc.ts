@@ -62,11 +62,51 @@ export class MissingDependencyError extends Error {
 }
 
 /**
+ * Single-character deletes at consecutive counters of one replica whose
+ * targets are consecutive characters of one replica, stepping by -1
+ * (backspace) or +1 (forward delete). The same shape as a delete-run record
+ * in the encoding. Every counter of the run shares this one object, so a
+ * run of k deletes costs k array slots and one object, not k target arrays.
+ */
+class DeleteRun {
+  /** Counter of the first delete in the run (on the deleting replica). */
+  readonly start: number;
+  /** Replica and counter of the character the first delete removed. */
+  readonly replica: ReplicaId;
+  readonly first: number;
+  /** 0 until the run has two deletes. */
+  step: -1 | 0 | 1 = 0;
+  length = 1;
+
+  constructor(start: number, target: IdRange) {
+    this.start = start;
+    this.replica = target.replica;
+    this.first = target.counter;
+  }
+
+  /** The targets of the delete at `counter`, as the op had them. */
+  targetsAt(counter: number): IdRange[] {
+    return [{ replica: this.replica, counter: this.first + this.step * (counter - this.start), length: 1 }];
+  }
+
+  /** Takes in the delete at the next counter if it continues the run. */
+  extend(counter: number, target: IdRange): boolean {
+    if (counter !== this.start + this.length || target.replica !== this.replica) return false;
+    const d = target.counter - (this.first + this.step * (this.length - 1));
+    if (this.step === 0 ? d !== 1 && d !== -1 : d !== this.step) return false;
+    this.step = d as -1 | 1;
+    this.length++;
+    return true;
+  }
+}
+
+/**
  * A replica's log entry at one counter: the inserted element, or the
  * targets of the delete op that used it (the op's id is implied by the slot,
- * so only the targets are kept).
+ * so only the targets are kept). Single-character deletes are kept as
+ * DeleteRuns.
  */
-type Slot = Elem | readonly IdRange[] | undefined;
+type Slot = Elem | DeleteRun | readonly IdRange[] | undefined;
 
 interface Pending {
   readonly op: Op;
@@ -270,6 +310,11 @@ export class TextDoc {
       for (let c = versionOf(since, replica); c < have; ) {
         const slot = slots[c];
         if (slot === undefined) throw new Error(`log hole at ${replica}:${c}`);
+        if (slot instanceof DeleteRun) {
+          ops.push({ kind: 'delete', id: { replica, counter: c }, targets: slot.targetsAt(c) });
+          c++;
+          continue;
+        }
         if (!(slot instanceof Elem)) {
           ops.push({ kind: 'delete', id: { replica, counter: c }, targets: slot });
           c++;
@@ -553,9 +598,22 @@ export class TextDoc {
       if (last !== undefined && last.index === index) last.length++;
       else changes.push({ kind: 'delete', index, length: 1 });
     }
-    this.slotsOf(op.id.replica)[op.id.counter] = op.targets;
+    this.logDelete(op);
     this.advance(op.id, 1);
     if (track) this.emit({ origin, op, changes });
+  }
+
+  /** Records a delete in its replica's log, folding single-character deletes into runs. */
+  private logDelete(op: DeleteOp): void {
+    const slots = this.slotsOf(op.id.replica);
+    const { counter } = op.id;
+    const target = op.targets.length === 1 ? op.targets[0]! : null;
+    if (target === null || target.length !== 1) {
+      slots[counter] = op.targets;
+      return;
+    }
+    const previous = counter > 0 ? slots[counter - 1] : undefined;
+    slots[counter] = previous instanceof DeleteRun && previous.extend(counter, target) ? previous : new DeleteRun(counter, target);
   }
 
   private emit(event: ChangeEvent): void {

@@ -4,6 +4,18 @@ All notable changes to this project are documented in this file. The format
 is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- The delete log stores runs of single-character deletes (backspace or
+  forward delete) as one shared range, like the delete-run record on the
+  wire. A retained single-character delete now costs 12 bytes instead of
+  244 on the replica that made it, and 13 instead of 133 on one that
+  received it (`npm run bench:delete-log`). The `automerge-paper` replay
+  drops from 72.2 MB to 55.5 MB of heap. Sync messages and snapshots are
+  unchanged, byte for byte.
+
 ## [0.1.0] - 2026-11-23
 
 ### Added

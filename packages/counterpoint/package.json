@@ -36,7 +36,8 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "bench:fetch": "node bench/fetch-traces.mjs",
-    "bench": "node bench/fetch-traces.mjs && node --expose-gc bench/trace.ts"
+    "bench": "node bench/fetch-traces.mjs && node --expose-gc bench/trace.ts",
+    "bench:delete-log": "node --expose-gc bench/delete-log.ts"
   },
   "homepage": "https://autumntrace.github.io/counterpoint/",
   "engines": {
