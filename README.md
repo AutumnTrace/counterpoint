@@ -132,7 +132,7 @@ Not guaranteed, or not done:
 - **Tombstones are forever.** Deleted characters keep their place in the
   tree *and their text*, in memory and in snapshots. In the `seph-blog1`
   trace, deleted text is 155 kB of the 375 kB snapshot.
-- **Memory.** One JavaScript object per character ever typed: about 415
+- **Memory.** One JavaScript object per character ever typed: about 319
   bytes per character in Node for the `automerge-paper` trace. Fine for
   documents, wasteful for books (see the roadmap).
 - **Trusted peers.** Nothing is authenticated. A peer can forge ops under
@@ -207,7 +207,7 @@ after 3 warm-up runs; `npm run bench` reproduces them.
 | Final length | 104,852 | 56,769 |
 | Replay locally (index-based edits) | 96.9 ms, 2.68 M edits/s | 58.0 ms, 2.38 M edits/s |
 | Apply the resulting ops on another replica | 48.2 ms, 5.38 M ops/s | 35.5 ms, 3.97 M ops/s |
-| Heap after the replay | 72.2 MB, 415 B per char | 55.6 MB, 274 B per char |
+| Heap after the replay | 55.5 MB, 319 B per char | 54.3 MB, 268 B per char |
 | Average message, one op per message | 24.0 B | 24.3 B |
 | Snapshot (equals a full delta sync) | 280.3 kB | 375.0 kB |
 | Save / load | 17.4 ms / 34.9 ms | 13.5 ms / 24.8 ms |
@@ -271,7 +271,7 @@ vector or catch-up.
 Written as the issues I would open next:
 
 - **Store runs instead of single characters.** One element object per
-  character costs about 415 bytes each in Node. Runs (split on demand, as
+  character costs about 319 bytes each in Node. Runs (split on demand, as
   Yjs and the paper's optimized Fugue do) should cut that by an order of
   magnitude.
 - **Drop deleted text from snapshots and memory.** Keep tombstone ids and
@@ -286,9 +286,6 @@ Written as the issues I would open next:
   two browser tabs can edit together using the same sync messages.
 - **Rich text.** Formatting spans anchored to element ids, in the style of
   Peritext.
-- **Compact the delete log.** Each retained delete costs about 200 bytes in
-  memory; consecutive backspaces could be stored as one range, as the
-  encoding already does.
 - **Publish to npm** as `@autumntrace/counterpoint` once the API settles.
 
 ## Development
@@ -301,6 +298,7 @@ npm run dev         # playground at http://localhost:5173/counterpoint/
 npm run build       # library to packages/counterpoint/dist, playground to apps/playground/dist
 npm run e2e         # Playwright against the built playground, using installed Chrome
 npm run bench       # downloads the two traces, then replays them
+npm run bench:delete-log -w @autumntrace/counterpoint   # memory per retained delete
 npm run media       # rebuilds the README GIF and screenshot
 ```
 

@@ -149,3 +149,19 @@ The first full benchmark run overlapped with an `npm install`; some rows
 came out up to about 10% slower (remote apply 52.5 ms against 48.2 ms on the
 rerun). The numbers in the README are from the rerun on an otherwise idle
 machine.
+
+## After 0.1.0: the delete log
+
+The README said a retained delete costs "about 200 bytes". Measured on its
+own (`bench/delete-log.ts`: type 100,000 characters, remove them one key at
+a time, subtract the same text removed by one op), it was 244 bytes on the
+replica that made the edits and 133 on one that received them. The
+difference was the target list: `delete()` builds it with `push`, and a
+pushed array keeps spare capacity (240 bytes against 112 for the same list
+written as a literal, measured separately).
+
+Runs of single-character deletes are now one shared object in the log, so
+each delete costs an array slot: 12 and 13 bytes. `automerge-paper` went
+from 72.2 MB to 55.5 MB, because all 77,463 of its deletes are single
+characters. `seph-blog1` barely moved (55.6 MB to 54.3 MB): only 6,764 of
+its 12,021 deletes are single characters, and the rest are selections.
